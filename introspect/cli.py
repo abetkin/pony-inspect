@@ -1,6 +1,9 @@
 '''
 Usage:
     introspect --database=DATABASE
+
+Options:
+    DATABASE  path to pony.orm.Database
 '''
 
 from pony.utils import cached_property
@@ -38,6 +41,10 @@ class Command:
     def reverse_relations(self):
         return {}
 
+    @cached_property
+    def relations_data(self):
+        return {}
+
     def get_output(self):
         lines = list(self._get_output())
 
@@ -51,13 +58,15 @@ class Command:
     def table2model(self, table_name):
         return re.sub(r'[^a-zA-Z0-9]', '', table_name.title())
 
+    def is_pony_table(self, table):
+        return table in ['migration', 'pony_version']
+
     def _get_output(self):
         options = docopt(__doc__)
         database = options['--database']
         db = import_obj(database)
 
         connection = db.provider.connect()
-        # 'table_name_filter' is a stealth option
 
         # get provider
         if isinstance(db, Database):
@@ -79,24 +88,34 @@ class Command:
 
             for table_name in tables_to_introspect:
                 try:
-                    relations = introspection.get_relations(cursor, table_name)
+                    relations = self.relations_data[table_name] = introspection.get_relations(cursor, table_name)
                 except NotImplementedError:
                     if os.environ.get('DEBUG'):
                         raise
-                    relations = {}
+                    relations = self.relations_data[table_name] = {}
                 # populate reverse relations
-                for column_name, (attr, ref_table) in relations.items():
+                model_name = self.table2model(table_name)
+                rattr = model_name.lower()
+                for column_name, (_attr, ref_table) in relations.items():
                     ref = self.reverse_relations.setdefault(ref_table, {})
-                    ref[table_name] = column_name
+                    keys = list(filter(lambda key: key.startswith(rattr), ref))
+                    postfix = f'_{len(keys)}' if keys else ''
+                    key = f"{rattr}_set{postfix}"
+                    ref[key] = {
+                        'attr': column_name,
+                        'model': model_name,
+                    }
+                
+                # TODO TODO use normalize_col_name
+                # cache parsed relations
+
 
             for table_name in tables_to_introspect:
+                if self.is_pony_table(table_name):
+                    continue
                 try:
-                    try:
-                        relations = introspection.get_relations(cursor, table_name)
-                    except NotImplementedError:
-                        if os.environ.get('DEBUG'):
-                            raise
-                        relations = {}
+                    relations = self.relations_data[table_name]
+
                     try:
                         constraints = introspection.get_constraints(cursor, table_name)
                     except NotImplementedError:
@@ -138,8 +157,6 @@ class Command:
 
                     used_column_names.append(att_name)
                     column_to_field_name[column_name] = att_name
-
-
                     field_kwargs = {}
 
                     # Add primary_key and unique, if necessary.
@@ -149,16 +166,19 @@ class Command:
                         field_kwargs['unique'] = True
 
                     if is_relation:
-
-                        rel_to = (
-                            model_name if relations[column_name][1] == table_name
-                            else table2model(relations[column_name][1])
-                        )
-                        # if rel_to in known_models:
-                        #     field_type = rel_to
-                        # else:
+                        ref_table = relations[column_name][1]
+                        rel_to = table2model(ref_table)
                         field_type = f'"{rel_to}"'
-                        field_kwargs['reverse'] = f'{table_name}_set'
+                        li = []
+                        for rattr, d in self.reverse_relations[ref_table].items():
+                            if d['attr'] == column_name and d['model'] == model_name:
+                                li.append(rattr)
+                        # else:
+                        #     assert 0
+                        if len(li) > 1:
+                            import ipdb; ipdb.set_trace()
+                        rattr, = li
+                        field_kwargs['reverse'] = rattr
                     else:
                         # Calling `get_field_type` to get the field type string and any
                         # additional parameters and notes.
@@ -214,12 +234,8 @@ class Command:
                 ref = self.reverse_relations.get(table_name)
                 if not ref:
                     continue
-                # TODO check if attr is valid iden
-                for ref_table, attr in ref.items():
-                    ref_model = self.table2model(ref_table)
-                    # FIXME
-                    key = ref_table
-                    yield f'    {key}_set = Set("{ref_model}", reverse="{attr}")'
+                for rattr, d in ref.items():
+                    yield f'''    {rattr} = Set("{d['model']}", reverse="{d['attr']}")'''
 
                 # for meta_line in self.get_meta(table_name, constraints, column_to_field_name):
                 #     yield meta_line
@@ -270,7 +286,7 @@ class Command:
             new_name = '%s_%d' % (new_name, num)
             field_notes.append('Field renamed because of name conflict.')
 
-        if col_name != new_name and field_notes:
+        if col_name != new_name:
             field_params['db_column'] = col_name
 
         return new_name, field_params, field_notes
@@ -303,19 +319,19 @@ class Command:
         # Add max_length for all str fields.
         if field_type == 'str' and row[3]:
             max_length = int(row[3])
-            # if max_length != -1:
-            #     field_params['max_length'] = max_length
+            if max_length != -1:
+                field_params['max_len'] = max_length
 
         if field_type == 'Decimal':
             if row[4] is None or row[5] is None:
                 field_notes.append(
                     'scale and precision have been guessed, as this '
                     'database handles decimal fields as float')
-                field_params['scale'] = row[4] if row[4] is not None else 10
-                field_params['precision'] = row[5] if row[5] is not None else 5
+                field_params['precision'] = row[4] if row[4] is not None else 10
+                field_params['scale'] = row[5] if row[5] is not None else 5
             else:
-                field_params['scale'] = row[4]
-                field_params['precision'] = row[5]
+                field_params['precision'] = row[4]
+                field_params['scale'] = row[5]
 
         return field_type, field_params, field_notes
 
