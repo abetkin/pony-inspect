@@ -44,7 +44,7 @@ class Command:
     @cached_property
     def relations_data(self):
         return {}
-
+    
     def get_output(self):
         lines = list(self._get_output())
 
@@ -86,6 +86,7 @@ class Command:
             known_models = []
             tables_to_introspect = introspection.table_names(cursor)
 
+
             for table_name in tables_to_introspect:
                 try:
                     relations = self.relations_data[table_name] = introspection.get_relations(cursor, table_name)
@@ -97,25 +98,21 @@ class Command:
                 model_name = self.table2model(table_name)
                 rattr = model_name.lower()
                 for column_name, (_attr, ref_table) in relations.items():
+                    att_name, *_ = self.normalize_col_name(column_name, (), True)
                     ref = self.reverse_relations.setdefault(ref_table, {})
                     keys = list(filter(lambda key: key.startswith(rattr), ref))
                     postfix = f'_{len(keys)}' if keys else ''
                     key = f"{rattr}_set{postfix}"
                     ref[key] = {
-                        'attr': column_name,
+                        'attr': att_name,
                         'model': model_name,
                     }
-                
-                # TODO TODO use normalize_col_name
-                # cache parsed relations
-
 
             for table_name in tables_to_introspect:
                 if self.is_pony_table(table_name):
                     continue
                 try:
                     relations = self.relations_data[table_name]
-
                     try:
                         constraints = introspection.get_constraints(cursor, table_name)
                     except NotImplementedError:
@@ -169,15 +166,11 @@ class Command:
                         ref_table = relations[column_name][1]
                         rel_to = table2model(ref_table)
                         field_type = f'"{rel_to}"'
-                        li = []
                         for rattr, d in self.reverse_relations[ref_table].items():
-                            if d['attr'] == column_name and d['model'] == model_name:
-                                li.append(rattr)
-                        # else:
-                        #     assert 0
-                        if len(li) > 1:
-                            import ipdb; ipdb.set_trace()
-                        rattr, = li
+                            if d['attr'] == att_name and d['model'] == model_name:
+                                break
+                        else:
+                            assert 0
                         field_kwargs['reverse'] = rattr
                     else:
                         # Calling `get_field_type` to get the field type string and any
@@ -239,7 +232,6 @@ class Command:
 
                 # for meta_line in self.get_meta(table_name, constraints, column_to_field_name):
                 #     yield meta_line
-
 
 
     def normalize_col_name(self, col_name, used_column_names, is_relation):
