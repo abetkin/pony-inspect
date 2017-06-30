@@ -145,44 +145,11 @@ class Introspection:
     #     """
     #     raise NotImplementedError('subclasses of BaseDatabaseIntrospection may require a get_key_columns() method')
 
-    def get_primary_key_column(self, cursor, table_name):
+    def get_primary_key_columns(self, cursor, table_name):
         """
         Return the name of the primary key column for the given table.
         """
         for constraint in self.get_constraints(cursor, table_name).values():
             if constraint['primary_key']:
-                return constraint['columns'][0]
+                return constraint['columns']
         return None
-
-    # def get_indexes(self, cursor, table_name):
-    #     """
-    #     Deprecated in Django 1.11, use get_constraints instead.
-    #     Return a dictionary of indexed fieldname -> infodict for the given
-    #     table, where each infodict is in the format:
-    #         {'primary_key': boolean representing whether it's the primary key,
-    #          'unique': boolean representing whether it's a unique index}
-
-    #     Only single-column indexes are introspected.
-    #     """
-    #     raise NotImplementedError('subclasses of BaseDatabaseIntrospection may require a get_indexes() method')
-
-    # def get_constraints(self, cursor, table_name):
-    #     """
-    #     Retrieve any constraints or keys (unique, pk, fk, check, index)
-    #     across one or more columns.
-
-    #     Return a dict mapping constraint names to their attributes,
-    #     where attributes is a dict with keys:
-    #      * columns: List of columns this covers
-    #      * primary_key: True if primary key, False otherwise
-    #      * unique: True if this is a unique constraint, False otherwise
-    #      * foreign_key: (table, column) of target, or None
-    #      * check: True if check constraint, False otherwise
-    #      * index: True if index, False otherwise.
-    #      * orders: The order (ASC/DESC) defined for the columns of indexes
-    #      * type: The type of the index (btree, hash, etc.)
-
-    #     Some backends may return special constraint names that don't exist
-    #     if they don't name constraints of a certain type (e.g. SQLite)
-    #     """
-    #     raise NotImplementedError('subclasses of BaseDatabaseIntrospection may require a get_constraints() method')

@@ -119,7 +119,9 @@ class Command:
                         if os.environ.get('DEBUG'):
                             raise
                         constraints = {}
-                    primary_key_column = introspection.get_primary_key_column(cursor, table_name)
+                    primary_key_columns = list(
+                        introspection.get_primary_key_columns(cursor, table_name)
+                    )
                     unique_columns = [
                         c['columns'][0] for c in constraints.values()
                         if c['unique'] and len(c['columns']) == 1
@@ -145,10 +147,14 @@ class Command:
                     comment_notes = []  # Holds Field notes, to be displayed in a Python comment.
                     extra_params = OrderedDict()  # Holds Field parameters such as 'db_column'.
                     column_name = row[0]
+
+
+
                     is_relation = column_name in relations
 
                     att_name, params, notes = self.normalize_col_name(
                         column_name, used_column_names, is_relation)
+
                     extra_params.update(params)
                     comment_notes.extend(notes)
 
@@ -157,7 +163,7 @@ class Command:
                     field_kwargs = {}
 
                     # Add primary_key and unique, if necessary.
-                    if column_name == primary_key_column:
+                    if [column_name] == primary_key_columns:
                         extra_params['primary_key'] = True
                     elif column_name in unique_columns:
                         field_kwargs['unique'] = True
@@ -172,6 +178,7 @@ class Command:
                         else:
                             assert 0
                         field_kwargs['reverse'] = rattr
+                        # field_kwargs['column'] = column_name
                     else:
                         # Calling `get_field_type` to get the field type string and any
                         # additional parameters and notes.
@@ -180,9 +187,6 @@ class Command:
                         field_kwargs.update(field_params)
                         comment_notes.extend(field_notes)
 
-
-                    # Don't output 'id = meta.AutoField(primary_key=True)', because
-                    # that's assumed if it doesn't exist.
                     if att_name == 'id' and extra_params == {'primary_key': True}:
                         if field_type == 'AUTO':
                             continue
@@ -212,27 +216,32 @@ class Command:
                     if kwargs_list:
                         kwargs_list = f', {kwargs_list}'
 
-                    if extra_params.get('null'):
-                        field_desc = f'{att_name} = Optional({field_type}{kwargs_list})'
+                    if extra_params.get('primary_key'):
+                        cls = 'PrimaryKey'
+                    elif extra_params.get('null'):
+                        cls = 'Optional'
                     else:
-                        field_desc = f'{att_name} = Required({field_type}{kwargs_list})'
+                        cls = 'Required'
+                    field_desc = f'{att_name} = {cls}({field_type}{kwargs_list})'
+                    # else:
+                    #     field_desc = f'{att_name} = Required({field_type}{kwargs_list})'
 
                     if comment_notes:
                         field_desc += f'  # {join(comment_notes)}'
                     yield f'    {field_desc}' 
                 
-                # TODO unique together
-
+                # compound primary key
+                if len(primary_key_columns) > 1:
+                    attrs = [
+                        column_to_field_name[c] for c in primary_key_columns
+                    ]
+                    yield f"    PrimaryKey({', '.join(attrs)})"
 
                 ref = self.reverse_relations.get(table_name)
                 if not ref:
                     continue
                 for rattr, d in ref.items():
                     yield f'''    {rattr} = Set("{d['model']}", reverse="{d['attr']}")'''
-
-                # for meta_line in self.get_meta(table_name, constraints, column_to_field_name):
-                #     yield meta_line
-
 
     def normalize_col_name(self, col_name, used_column_names, is_relation):
         """
@@ -244,12 +253,6 @@ class Command:
         new_name = col_name.lower()
         if new_name != col_name:
             field_notes.append('Field name made lowercase.')
-
-        # if is_relation:
-        #     if new_name.endswith('_id'):
-        #         new_name = new_name[:-3]
-        #     else:
-        #         field_params['db_column'] = col_name
 
         new_name, num_repl = re.subn(r'\W', '_', new_name)
         if num_repl > 0:
