@@ -6,6 +6,8 @@ Options:
     DATABASE  path to pony.orm.Database
 '''
 
+from collections import defaultdict
+
 from pony.utils import cached_property
 
 import keyword
@@ -21,7 +23,11 @@ from pony.orm import Database
 import os
 from textwrap import dedent
 
+import warnings
+
 from .postgres import Introspection
+
+# TODO related field set
 
 class Command:
     help = "Introspects the database tables in the given database and outputs a Django model module."
@@ -37,17 +43,8 @@ class Command:
             'from pony.orm import *'
         ]
     
-    @cached_property
-    def reverse_relations(self):
-        return {}
-
-    @cached_property
-    def relations_data(self):
-        return {}
-    
     def get_output(self):
         lines = list(self._get_output())
-
         yield "# This is an auto-generated module with pony entities."
         yield "# Feel free to rename the models, but don't rename _table_ or field names."
         yield ''
@@ -61,7 +58,15 @@ class Command:
     def is_pony_table(self, table):
         return table in ['migration', 'pony_version']
 
-    def _get_output(self):
+    @cached_property
+    def field_counters(self):
+        return defaultdict(int)
+
+    @cached_property
+    def relations_counters(self):
+        return defaultdict(int)
+
+    def _make_introspection(self):
         options = docopt(__doc__)
         database = options['--database']
         db = import_obj(database)
@@ -76,146 +81,194 @@ class Command:
 
         self.introspection = introspection
 
-        table2model = self.table2model
-
-        def strip_prefix(s):
-            return s[1:] if s.startswith("u'") else s
+        ret = {}
 
         with connection.cursor() as cursor:
-            yield 'db = Database()'
-            known_models = []
             tables_to_introspect = introspection.table_names(cursor)
 
+            counters = self.field_counters
+            rel_counters = self.relations_counters
 
             for table_name in tables_to_introspect:
                 try:
-                    relations = self.relations_data[table_name] = introspection.get_relations(cursor, table_name)
+                    relations = introspection.get_relations(cursor, table_name)
                 except NotImplementedError:
                     if os.environ.get('DEBUG'):
                         raise
-                    relations = self.relations_data[table_name] = {}
-                # populate reverse relations
-                model_name = self.table2model(table_name)
-                rattr = model_name.lower()
-                for column_name, (_attr, ref_table) in relations.items():
-                    att_name, *_ = self.normalize_col_name(column_name, (), True)
-                    ref = self.reverse_relations.setdefault(ref_table, {})
-                    keys = list(filter(lambda key: key.startswith(rattr), ref))
-                    postfix = f'_{len(keys)}' if keys else ''
-                    key = f"{rattr}_set{postfix}"
-                    ref[key] = {
-                        'attr': att_name,
-                        'model': model_name,
-                    }
-
-            for table_name in tables_to_introspect:
-                if self.is_pony_table(table_name):
-                    continue
+                    relations = {}
                 try:
-                    relations = self.relations_data[table_name]
-                    try:
-                        constraints = introspection.get_constraints(cursor, table_name)
-                    except NotImplementedError:
-                        if os.environ.get('DEBUG'):
-                            raise
-                        constraints = {}
-                    primary_key_columns = list(
-                        introspection.get_primary_key_columns(cursor, table_name)
-                    )
-                    unique_columns = [
-                        c['columns'][0] for c in constraints.values()
-                        if c['unique'] and len(c['columns']) == 1
-                    ]
-                    table_description = introspection.get_table_description(cursor, table_name)
-                except Exception as e:
+                    constraints = introspection.get_constraints(cursor, table_name)
+                except NotImplementedError:
                     if os.environ.get('DEBUG'):
                         raise
-                    yield f"# Unable to inspect table '{table_name}'"
-                    yield f"# The error was: {e}"
+                    constraints = {}
+                primary_key_columns = list(
+                    introspection.get_primary_key_columns(cursor, table_name)
+                )
+                unique_columns = [
+                    c['columns'][0] for c in constraints.values()
+                    if c['unique'] and len(c['columns']) == 1
+                ]
+                table_description = introspection.get_table_description(cursor, table_name)
+                
+                if self.is_pony_table(table_name):
+                    continue
+                # normalize field names & increment field name counters
+                for field in table_description:
+                    if field.name in relations:
+                        continue
+                    field_name = field.name
+                    field.name, _, _ = self.normalize_col_name(field_name)
+
+                    field.name = f"{field.name}{counters[(table_name, field.name)] or ''}"
+                    counters[(table_name, field.name)] += 1
+
+                # check if it's an m2m table
+                related_tables = []
+                is_m2m = False
+                for field in table_description:
+                    if field.name in primary_key_columns:
+                        continue
+                    #relations: {'a_id': ('id', 'm2m_a')}
+                    if field.name not in relations:
+                        break
+                    tblname = relations[field.name][1]
+                    related_tables.append({'table': tblname, 'field': field.name})
+                else:
+                    
+                    is_m2m = len(set(t['table'] for t in related_tables)) == 2
+
+                if is_m2m:
+                    # store the relation in the each of related tables
+                    this, other = related_tables
+                    this_field, other_field = this['field'], other['field']
+                    this['field'] = f"{this['field']}_set{counters[(other['table'], this['field'])] or ''}"
+                    other['field'] = f"{other['field']}_set{counters[(this['table'], other['field'])] or ''}"
+                    counters[(this['table'], other_field)] += 1
+                    counters[(other['table'], this_field)] += 1
+                    for this, other in ((this, other), (other, this)):
+                        ret.setdefault(this['table'], {}).setdefault('rel_attrs', []).append({
+                            'name': other['field'],
+                            'table': other['table'],
+                            'cls': 'Set',
+                            'reverse': this['field']
+                        })
+                        rel_counters[(this['table'], other['table'])] += 1
                     continue
 
-                yield ''
-                yield ''
-                model_name = table2model(table_name)
-                yield f'class {model_name}(db.Entity):'
-                yield f'    _table_ = "{table_name}"'
-                known_models.append(model_name)
-                used_column_names = []  # Holds column names used in the table so far
-                column_to_field_name = {}  # Maps column names to names of model fields
+                # calculate relation attributes
+                for column_name, (_attr, ref_table) in relations.items():
+                    att_name, *_ = self.normalize_col_name(column_name)
+                    index = counters[(table_name, att_name)]
+                    counters[(table_name, att_name)] += 1
+                    att_name = f"{att_name}{index or ''}"
+                    rel_attrs = ret.setdefault(table_name, {}).setdefault('rel_attrs', [])
+                    # getting reverse name             
+                    reverse = table_name.lower()
+                    index = counters[(ref_table, reverse)]
+                    counters[(ref_table, reverse)] += 1
+                    reverse = f"{reverse}_set{index or ''}"
 
-                for row in table_description:
-                    comment_notes = []  # Holds Field notes, to be displayed in a Python comment.
-                    extra_params = OrderedDict()  # Holds Field parameters such as 'db_column'.
-                    column_name = row[0]
+                    rel_attrs.append({
+                        'name': att_name,
+                        'cls': 'Required',
+                        'reverse': reverse,
+                        'table': ref_table,
+                    })
+                    rel_counters[(table_name, ref_table)] += 1
+                    rel_attrs = ret.setdefault(ref_table, {}).setdefault('rel_attrs', [])
+                    rel_attrs.append({
+                        'name': reverse,
+                        'cls': 'Set',
+                        'reverse': att_name,
+                        'table': table_name,
+                    })
+                    rel_counters[(ref_table, table_name)] += 1
 
+                ret.setdefault(table_name, {}).update({
+                    'relations': relations, 'description': table_description,
+                    'unique_columns': unique_columns, 'primary_key_columns': primary_key_columns,
+                    'constraints': constraints,
+                })
+                
+            return ret
 
+    def _get_output(self):
+        # not requires connection?
+        all_data = self._make_introspection()
+        table2model = self.table2model
 
-                    is_relation = column_name in relations
+        yield 'db = Database()'
+        known_models = []
 
-                    att_name, params, notes = self.normalize_col_name(
-                        column_name, used_column_names, is_relation)
+        for table_name, data in all_data.items():
+            relations = data['relations']
+            primary_key_columns = data['primary_key_columns']
+            unique_columns = data['unique_columns']
+            table_description = data['description']
 
-                    extra_params.update(params)
-                    comment_notes.extend(notes)
+            yield ''
+            yield ''
+            model_name = table2model(table_name)
+            yield f'class {model_name}(db.Entity):'
+            yield f'    _table_ = "{table_name}"'
+            known_models.append(model_name)
+            # used_column_names = []  # Holds column names used in the table so far
+            column_to_field_name = {}  # Maps column names to names of model fields
 
-                    used_column_names.append(att_name)
-                    column_to_field_name[column_name] = att_name
-                    field_kwargs = {}
+            for row in table_description:
+                comment_notes = []  # Holds Field notes, to be displayed in a Python comment.
+                extra_params = OrderedDict()  # Holds Field parameters such as 'db_column'.
+                column_name = att_name = row[0]
 
-                    # Add primary_key and unique, if necessary.
-                    if [column_name] == primary_key_columns:
-                        extra_params['primary_key'] = True
-                    elif column_name in unique_columns:
-                        field_kwargs['unique'] = True
+                # used_column_names.append(att_name)
+                column_to_field_name[column_name] = att_name
+                field_kwargs = {}
 
-                    if is_relation:
-                        ref_table = relations[column_name][1]
-                        rel_to = table2model(ref_table)
-                        field_type = f'"{rel_to}"'
-                        for rattr, d in self.reverse_relations[ref_table].items():
-                            if d['attr'] == att_name and d['model'] == model_name:
-                                break
-                        else:
-                            assert 0
-                        field_kwargs['reverse'] = rattr
-                        # field_kwargs['column'] = column_name
-                    else:
-                        # Calling `get_field_type` to get the field type string and any
-                        # additional parameters and notes.
-                        field_type, field_params, field_notes = self.get_field_type(connection, table_name, row)
-                        extra_params.update(field_params)
-                        field_kwargs.update(field_params)
-                        comment_notes.extend(field_notes)
+                # Add primary_key and unique, if necessary.
+                if [column_name] == primary_key_columns:
+                    extra_params['primary_key'] = True
+                elif column_name in unique_columns:
+                    field_kwargs['unique'] = True
 
-                    if att_name == 'id' and extra_params == {'primary_key': True}:
-                        if field_type == 'AUTO':
-                            continue
+                is_relation = column_name in relations
+                if not is_relation:
+                    # Calling `get_field_type` to get the field type string and any
+                    # additional parameters and notes.
+                    field_type, field_params, field_notes = self.get_field_type(#connection,
+                            table_name, row)
+                    extra_params.update(field_params)
+                    field_kwargs.update(field_params)
+                    comment_notes.extend(field_notes)
 
-                    # Add 'null' and 'blank', if the 'null_ok' flag was present in the
-                    # table description.
-                    if row[6]:  # If it's NULL...
-                        extra_params['null'] = True
-                    
-                    def sort_key(item, default=len(field_kwargs)):
-                        key, val = item
-                        try:
-                            index = self.KWARGS_ORDER.index(key)
-                        except ValueError:
-                            return default
-                        return index
+                if att_name == 'id' and extra_params == {'primary_key': True}:
+                    if field_type == 'AUTO':
+                        continue
 
-                    sorted_kwargs = sorted(field_kwargs.items(), key=sort_key)
+                if row[6]:  # If it's NULL...
+                    extra_params['null'] = True
+                
+                def sort_key(item, default=len(field_kwargs)):
+                    key, val = item
+                    try:
+                        index = self.KWARGS_ORDER.index(key)
+                    except ValueError:
+                        return default
+                    return index
 
-                    format_val = repr
+                sorted_kwargs = sorted(field_kwargs.items(), key=sort_key)
 
-                    kwargs_list = [
-                        f'{key}={format_val(val)}'
-                        for key, val in sorted_kwargs
-                    ]
-                    kwargs_list = ', '.join(kwargs_list)
-                    if kwargs_list:
-                        kwargs_list = f', {kwargs_list}'
+                format_val = repr
 
+                kwargs_list = [
+                    f'{key}={format_val(val)}'
+                    for key, val in sorted_kwargs
+                ]
+                kwargs_list = ', '.join(kwargs_list)
+                if kwargs_list:
+                    kwargs_list = f', {kwargs_list}'
+
+                if not is_relation:
                     if extra_params.get('primary_key'):
                         cls = 'PrimaryKey'
                     elif extra_params.get('null'):
@@ -223,27 +276,28 @@ class Command:
                     else:
                         cls = 'Required'
                     field_desc = f'{att_name} = {cls}({field_type}{kwargs_list})'
-                    # else:
-                    #     field_desc = f'{att_name} = Required({field_type}{kwargs_list})'
 
                     if comment_notes:
                         field_desc += f'  # {join(comment_notes)}'
                     yield f'    {field_desc}' 
-                
-                # compound primary key
-                if len(primary_key_columns) > 1:
-                    attrs = [
-                        column_to_field_name[c] for c in primary_key_columns
-                    ]
-                    yield f"    PrimaryKey({', '.join(attrs)})"
 
-                ref = self.reverse_relations.get(table_name)
-                if not ref:
-                    continue
-                for rattr, d in ref.items():
-                    yield f'''    {rattr} = Set("{d['model']}", reverse="{d['attr']}")'''
+            rel_attrs = data.get('rel_attrs', ())
+            for attr in rel_attrs:
+                model = self.table2model(attr['table'])
+                reverse = ''
+                if self.relations_counters[(table_name, attr['table'])] > 1:
+                    reverse = f''', reverse="{attr['reverse']}"'''
+                yield f'''    {attr['name']} = {attr['cls']}("{model}"{reverse})'''
+            
+            # compound primary key
+            if len(primary_key_columns) > 1:
+                attrs = [
+                    column_to_field_name[c] for c in primary_key_columns
+                ]
+                yield f"    PrimaryKey({', '.join(attrs)})"
 
-    def normalize_col_name(self, col_name, used_column_names, is_relation):
+
+    def normalize_col_name(self, col_name):
         """
         Modify the column name to make it Python-compatible as a field name
         """
@@ -274,19 +328,12 @@ class Command:
             new_name = 'number_%s' % new_name
             field_notes.append("Field renamed because it wasn't a valid Python identifier.")
 
-        if new_name in used_column_names:
-            num = 0
-            while '%s_%d' % (new_name, num) in used_column_names:
-                num += 1
-            new_name = '%s_%d' % (new_name, num)
-            field_notes.append('Field renamed because of name conflict.')
-
         if col_name != new_name:
             field_params['db_column'] = col_name
 
         return new_name, field_params, field_notes
 
-    def get_field_type(self, connection, table_name, row):
+    def get_field_type(self, table_name, row):
         """
         Given the database connection, the table name, and the cursor row
         description, this routine will return the given field type name, as
@@ -329,29 +376,3 @@ class Command:
                 field_params['scale'] = row[5]
 
         return field_type, field_params, field_notes
-
-    # def get_meta(self, table_name, constraints, column_to_field_name):
-    #     """
-    #     Return a sequence comprising the lines of code necessary
-    #     to construct the inner Meta class for the model corresponding
-    #     to the given database table name.
-    #     """
-    #     unique_together = []
-    #     for index, params in constraints.items():
-    #         if params['unique']:
-    #             columns = params['columns']
-    #             if len(columns) > 1:
-    #                 # we do not want to include the u"" or u'' prefix
-    #                 # so we build the string rather than interpolate the tuple
-    #                 tup = '(' + ', '.join("'%s'" % column_to_field_name[c] for c in columns) + ')'
-    #                 unique_together.append(tup)
-    #     meta = ["",
-    #             "    class Meta:",
-    #             "        managed = False",
-    #             "        db_table = '%s'" % table_name]
-    #     if unique_together:
-    #         tup = '(' + ', '.join(unique_together) + ',)'
-    #         meta += ["        unique_together = %s" % tup]
-    #     return meta
-
-        

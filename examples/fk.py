@@ -6,12 +6,12 @@ class A(db.Entity):
     bs = Set('B')
 
 class B(db.Entity):
-    a_set = Set('A')
+    a = Required('A')
 
 db.bind(**{
     'provider': 'postgres',
     'host': 'localhost',
-    'database': 'simpl',
+    'database': '_fk',
     'user': 'postgres',
     'password': 'postgres',
 })

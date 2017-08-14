@@ -1,7 +1,7 @@
 
 ## Instalation
 
-Please install this package in editable mode and `git pull` frequently :)
+Please install this package in editable mode and `git pull` frequently
 
 ```
 pip install -e .

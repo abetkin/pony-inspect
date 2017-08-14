@@ -1,7 +1,7 @@
 
 from collections import namedtuple
 
-from .base import Introspection as BaseIntrospection
+from .base import Introspection as BaseIntrospection, FieldInfo
 
 class Introspection(BaseIntrospection):
     # Maps type codes to Pony attr types.
@@ -80,7 +80,7 @@ class Introspection(BaseIntrospection):
         # As cursor.description does not return reliably the nullable property,
         # we have to query the information_schema (#7783)
 
-        FieldInfo = namedtuple('FieldInfo', 'name type_code display_size internal_size precision scale null_ok default')
+        # FieldInfo = namedtuple('FieldInfo', 'name type_code display_size internal_size precision scale null_ok default')
 
         cursor.execute("""
             SELECT column_name, is_nullable, column_default

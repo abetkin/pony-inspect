@@ -10,87 +10,74 @@ class Email(db.Entity):
     _table_ = "email"
     email = Required(str)
     is_personal = Required(bool)
-    employee = Required("Employee", reverse='email_set')
+    employee = Required("Employee")
 
 
 class Employee(db.Entity):
     _table_ = "employee"
     first_name = Required(str)
     last_name = Required(str)
-    manager = Optional("Employee", reverse='employee_set')
-    location = Required("Location", reverse='employee_set')
-    email_set = Set("Email", reverse="employee")
+    email_set = Set("Email")
+    location = Required("Location")
+    manager = Required("Employee", reverse="employee_set")
     employee_set = Set("Employee", reverse="manager")
-    employeegroups_set = Set("EmployeeGroups", reverse="employee")
-    employeepositions_set = Set("EmployeePositions", reverse="employee")
-    imusername_set = Set("ImUsername", reverse="employee")
-    phone_set = Set("Phone", reverse="employee")
-
-
-class EmployeeGroups(db.Entity):
-    _table_ = "employee_groups"
-    employee = Required("Employee", reverse='employeegroups_set')
-    group = Required("Group", reverse='employeegroups_set')
-    PrimaryKey(employee, group)
-
-
-class EmployeePositions(db.Entity):
-    _table_ = "employee_positions"
-    employee = Required("Employee", reverse='employeepositions_set')
-    position = Required("Position", reverse='employeepositions_set')
-    PrimaryKey(employee, position)
-
-
-class Group(db.Entity):
-    _table_ = "group"
-    name = Required(str)
-    employeegroups_set = Set("EmployeeGroups", reverse="group")
-
-
-class ImUsername(db.Entity):
-    _table_ = "im_username"
-    employee = Required("Employee", reverse='imusername_set')
-    messenger_type = Required("Instantmessenger", reverse='imusername_set')
-    username = Required(str)
-    PrimaryKey(employee, messenger_type)
-
-
-class Instantmessenger(db.Entity):
-    _table_ = "instantmessenger"
-    name = PrimaryKey(str)
-    imusername_set = Set("ImUsername", reverse="messenger_type")
+    group_set = Set("Group")
+    position_set = Set("Position")
+    im_username_set = Set("ImUsername")
+    phone_set = Set("Phone")
 
 
 class Location(db.Entity):
     _table_ = "location"
     name = Required(str)
     address = Required(str)
-    employee_set = Set("Employee", reverse="location")
+    employee_set = Set("Employee")
+
+
+class Group(db.Entity):
+    _table_ = "group"
+    name = Required(str)
+    employee_set = Set("Employee")
+
+
+class Position(db.Entity):
+    _table_ = "position"
+    title = PrimaryKey(str)
+    employee_set = Set("Employee")
+
+
+class ImUsername(db.Entity):
+    _table_ = "im_username"
+    username = Required(str)
+    employee = Required("Employee")
+    messenger_type = Required("Instantmessenger")
+    PrimaryKey(employee, messenger_type)
+
+
+class Instantmessenger(db.Entity):
+    _table_ = "instantmessenger"
+    name = PrimaryKey(str)
+    im_username_set = Set("ImUsername")
 
 
 class Phone(db.Entity):
     _table_ = "phone"
     number = Required(str)
     is_personal = Required(bool)
-    employee = Required("Employee", reverse='phone_set')
-    type = Required("Phonetype", reverse='phone_set')
+    employee = Required("Employee")
+    type = Required("Phonetype")
 
 
 class Phonetype(db.Entity):
     _table_ = "phonetype"
     name = PrimaryKey(str)
-    phone_set = Set("Phone", reverse="type")
+    phone_set = Set("Phone")
 
-
-class Position(db.Entity):
-    _table_ = "position"
-    title = PrimaryKey(str)
-    employeepositions_set = Set("EmployeePositions", reverse="position")
-
+sql_debug(1)
 db.bind(**{
     'provider': 'postgres',
     'host': 'localhost',
-    'database': 'example_simple',
+    'database': 'cd',
     'user': 'postgres',
     'password': 'postgres',
 })
