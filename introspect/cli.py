@@ -127,11 +127,12 @@ class Command:
                 related_tables = []
                 is_m2m = False
                 for field in table_description:
-                    if field.name in primary_key_columns:
-                        continue
                     #relations: {'a_id': ('id', 'm2m_a')}
                     if field.name not in relations:
-                        break
+                        if field.name in primary_key_columns:
+                            continue
+                        else:
+                            break
                     tblname = relations[field.name][1]
                     related_tables.append({'table': tblname, 'field': field.name})
                 else:
