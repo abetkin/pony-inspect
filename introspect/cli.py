@@ -32,10 +32,7 @@ from .postgres import Introspection
 class Command:
     help = "Introspects the database tables in the given database and outputs a Django model module."
 
-
-    KWARGS_ORDER = dedent('''\
-        unique nullable default db_column
-        ''').split()
+    KWARGS_ORDER = 'unique nullable default db_column'.split()
 
     @cached_property
     def imports(self):
@@ -117,8 +114,7 @@ class Command:
                 for field in table_description:
                     if field.name in relations:
                         continue
-                    field_name = field.name
-                    field.name, _, _ = self.normalize_col_name(field_name)
+                    field.name, _, _ = self.normalize_col_name(field.name)
 
                     field.name = f"{field.name}{counters[(table_name, field.name)] or ''}"
                     counters[(table_name, field.name)] += 1
@@ -159,7 +155,7 @@ class Command:
 
                 # calculate relation attributes
                 for column_name, (_attr, ref_table) in relations.items():
-                    att_name, *_ = self.normalize_col_name(column_name)
+                    att_name, kwargs, _notes = self.normalize_col_name(column_name, is_related=True)
                     index = counters[(table_name, att_name)]
                     counters[(table_name, att_name)] += 1
                     att_name = f"{att_name}{index or ''}"
@@ -175,6 +171,7 @@ class Command:
                         'cls': 'Required',
                         'reverse': reverse,
                         'table': ref_table,
+                        'kwargs': kwargs,
                     })
                     rel_counters[(table_name, ref_table)] += 1
                     rel_attrs = ret.setdefault(ref_table, {}).setdefault('rel_attrs', [])
@@ -285,10 +282,17 @@ class Command:
             rel_attrs = data.get('rel_attrs', ())
             for attr in rel_attrs:
                 model = self.table2model(attr['table'])
-                reverse = ''
+                kwargs = attr.get('kwargs', {})
                 if self.relations_counters[(table_name, attr['table'])] > 1:
-                    reverse = f''', reverse="{attr['reverse']}"'''
-                yield f'''    {attr['name']} = {attr['cls']}("{model}"{reverse})'''
+                    kwargs['reverse'] = attr['reverse']
+                
+                kwargs = [
+                    f'{key}={repr(val)}'
+                    for key, val in kwargs.items()
+                ]
+                kwargs = ', '.join(kwargs)
+                kwargs = f', {kwargs}' if kwargs else ''
+                yield f'''    {attr['name']} = {attr['cls']}("{model}"{kwargs})'''
             
             # compound primary key
             if len(primary_key_columns) > 1:
@@ -298,7 +302,7 @@ class Command:
                 yield f"    PrimaryKey({', '.join(attrs)})"
 
 
-    def normalize_col_name(self, col_name):
+    def normalize_col_name(self, col_name, is_related=False):
         """
         Modify the column name to make it Python-compatible as a field name
         """
@@ -308,7 +312,8 @@ class Command:
         new_name = col_name.lower()
         if new_name != col_name:
             field_notes.append('Field name made lowercase.')
-
+        if is_related and col_name.endswith('_id'):
+            new_name = new_name[:-3]
         new_name, num_repl = re.subn(r'\W', '_', new_name)
         if num_repl > 0:
             field_notes.append('Field renamed to remove unsuitable characters.')
