@@ -1,14 +1,13 @@
 import warnings
-from collections import namedtuple
+from collections import namedtuple, OrderedDict
+from .utils import OrderedSet
 
 from MySQLdb.constants import FIELD_TYPE
 
-from django.db.backends.base.introspection import (
-    BaseDatabaseIntrospection, FieldInfo, _FieldInfo, TableInfo,
+from .base import (
+    Introspection as BaseIntrospection,
+    FieldInfo, _FieldInfo, TableInfo,
 )
-from django.db.models.indexes import Index
-from django.utils.datastructures import OrderedSet
-from django.utils.deprecation import RemovedInDjango21Warning
 
 # InfoLine = namedtuple('InfoLine', 'col_name data_type max_len num_prec num_scale extra column_default is_unsigned')
 
@@ -16,7 +15,7 @@ def InfoLine(*args):
     return _FieldInfo(args)
 
 
-class DatabaseIntrospection(BaseDatabaseIntrospection):
+class Introspection(BaseIntrospection):
     #
     data_types_reverse = {
         FIELD_TYPE.BLOB: 'buffer', # 'TextField',
@@ -87,7 +86,9 @@ class DatabaseIntrospection(BaseDatabaseIntrospection):
             WHERE table_name = %s AND table_schema = DATABASE()""", [table_name])
         field_info = {line[0]: InfoLine(*line) for line in cursor.fetchall()}
 
-        cursor.execute("SELECT * FROM %s LIMIT 1" % self.connection.ops.quote_name(table_name))
+        quote_name = self.provider.quote_name
+
+        cursor.execute("SELECT * FROM %s LIMIT 1" % quote_name(table_name))
 
         def to_int(i):
             return int(i) if i is not None else i
@@ -144,7 +145,8 @@ class DatabaseIntrospection(BaseDatabaseIntrospection):
             "get_indexes() is deprecated in favor of get_constraints().",
             RemovedInDjango21Warning, stacklevel=2
         )
-        cursor.execute("SHOW INDEX FROM %s" % self.connection.ops.quote_name(table_name))
+        quote_name = self.provider.quote_name
+        cursor.execute("SHOW INDEX FROM %s" % quote_name(table_name))
         # Do a two-pass search for indexes: on first pass check which indexes
         # are multicolumn, on second pass check which single-column indexes
         # are present.
@@ -185,6 +187,7 @@ class DatabaseIntrospection(BaseDatabaseIntrospection):
         Retrieve any constraints or keys (unique, pk, fk, check, index) across
         one or more columns.
         """
+        quote_name = self.provider.quote_name
         constraints = {}
         # Get the actual constraint names and columns
         name_query = """
@@ -223,7 +226,7 @@ class DatabaseIntrospection(BaseDatabaseIntrospection):
             elif kind.lower() == "unique":
                 constraints[constraint]['unique'] = True
         # Now add in the indexes
-        cursor.execute("SHOW INDEX FROM %s" % self.connection.ops.quote_name(table_name))
+        cursor.execute("SHOW INDEX FROM %s" % quote_name(table_name))
         for table, non_unique, index, colseq, column, type_ in [x[:5] + (x[10],) for x in cursor.fetchall()]:
             if index not in constraints:
                 constraints[index] = {
@@ -234,7 +237,7 @@ class DatabaseIntrospection(BaseDatabaseIntrospection):
                     'foreign_key': None,
                 }
             constraints[index]['index'] = True
-            constraints[index]['type'] = Index.suffix if type_ == 'BTREE' else type_.lower()
+            # constraints[index]['type'] = Index.suffix if type_ == 'BTREE' else type_.lower()
             constraints[index]['columns'].add(column)
         # Convert the sorted sets to lists
         for constraint in constraints.values():

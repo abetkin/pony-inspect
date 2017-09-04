@@ -25,7 +25,13 @@ from textwrap import dedent
 
 import warnings
 
-from .postgres import Introspection
+from .postgres import Introspection as PostgresIntrospection
+from .mysql import Introspection as MysqlIntrospection
+
+INROSPECTION_IMPL = {
+    'postgresql': PostgresIntrospection,
+    'mysql': MysqlIntrospection,
+}
 
 # TODO related field set
 
@@ -72,6 +78,7 @@ class Command:
 
         # get provider
         if isinstance(db, Database):
+            Introspection = INROSPECTION_IMPL[db.provider.dialect.lower()]
             introspection = Introspection(connection, provider=db.provider)
         else:
             raise NotImplementedError
@@ -256,10 +263,8 @@ class Command:
 
                 sorted_kwargs = sorted(field_kwargs.items(), key=sort_key)
 
-                format_val = repr
-
                 kwargs_list = [
-                    f'{key}={format_val(val)}'
+                    f'{key}={repr(val)}'
                     for key, val in sorted_kwargs
                 ]
                 kwargs_list = ', '.join(kwargs_list)
