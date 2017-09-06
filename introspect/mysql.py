@@ -6,13 +6,11 @@ from MySQLdb.constants import FIELD_TYPE
 
 from .base import (
     Introspection as BaseIntrospection,
-    FieldInfo, _FieldInfo, TableInfo,
+    FieldInfo, TableInfo, NamedList
 )
 
-# InfoLine = namedtuple('InfoLine', 'col_name data_type max_len num_prec num_scale extra column_default is_unsigned')
-
-def InfoLine(*args):
-    return _FieldInfo(args)
+class InfoLine(NamedList):
+    KEYS = 'col_name data_type max_len num_prec num_scale extra column_default is_unsigned'.split()
 
 
 class Introspection(BaseIntrospection):

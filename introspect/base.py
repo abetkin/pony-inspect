@@ -4,17 +4,27 @@ from collections import namedtuple
 TableInfo = namedtuple('TableInfo', ['name', 'type'])
 
 # Structure returned by the DB-API cursor.description interface (PEP 249)
-# FieldInfo = namedtuple('FieldInfo', 'name type_code display_size internal_size precision scale null_ok default')
 
-def FieldInfo(*args):
-    return _FieldInfo(args)
+# def FieldInfo(*args):
+#     return _FieldInfo(args)
 
-class _FieldInfo(list):
-    _keys = 'name type_code display_size internal_size precision scale null_ok default'.split()
+class NamedList(list):
+    KEYS = ()
 
     def __getattr__(self, key):
-        index = self._keys.index(key)
+        index = self.KEYS.index(key)
         return self[index]
+
+    def __new__(cls, *args):
+        ret = list.__new__(cls)
+        ret.extend(args)
+        return ret
+
+    def __init__(self, *args):
+        pass
+
+class FieldInfo(NamedList):
+    KEYS = 'name type_code display_size internal_size precision scale null_ok default'.split()
 
 
 class Introspection:

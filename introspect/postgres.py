@@ -80,8 +80,6 @@ class Introspection(BaseIntrospection):
         # As cursor.description does not return reliably the nullable property,
         # we have to query the information_schema (#7783)
 
-        # FieldInfo = namedtuple('FieldInfo', 'name type_code display_size internal_size precision scale null_ok default')
-
         cursor.execute("""
             SELECT column_name, is_nullable, column_default
             FROM information_schema.columns
@@ -92,6 +90,7 @@ class Introspection(BaseIntrospection):
             FieldInfo(*(line[0:6] + (field_map[line.name][0] == 'YES', field_map[line.name][1])))
             for line in cursor.description
         ]
+
 
     def get_relations(self, cursor, table_name):
         """
