@@ -41,7 +41,7 @@ INROSPECTION_IMPL = {
 class Command:
     help = "Introspects the database tables in the given database and outputs a Django model module."
 
-    KWARGS_ORDER = 'unique nullable default db_column'.split()
+    KWARGS_ORDER = 'unique nullable default column'.split()
 
     @cached_property
     def imports(self):
@@ -228,7 +228,7 @@ class Command:
 
             for row in table_description:
                 comment_notes = []  # Holds Field notes, to be displayed in a Python comment.
-                extra_params = OrderedDict()  # Holds Field parameters such as 'db_column'.
+                extra_params = OrderedDict()  # Holds Field parameters such as 'column'.
                 column_name = att_name = row[0]
 
                 # used_column_names.append(att_name)
@@ -345,7 +345,7 @@ class Command:
             field_notes.append("Field renamed because it wasn't a valid Python identifier.")
 
         if col_name != new_name:
-            field_params['db_column'] = col_name
+            field_params['column'] = col_name
 
         return new_name, field_params, field_notes
 
@@ -359,7 +359,7 @@ class Command:
         field_notes = []
 
         try:
-            field_type, _import = self.introspection.get_field_type(row[1], row)
+            field_type, opts, _import = self.introspection.get_field_type(row[1], row)
         except KeyError:
             field_type = 'LongStr'
             _import = 'from pony.orm.ormtypes import LongStr'
@@ -367,6 +367,8 @@ class Command:
 
         if _import:
             self.imports.append(_import)
+        if opts:
+            field_params.update(opts)
 
         # This is a hook for data_types_reverse to return a tuple of
         # (field_type, field_params_dict).

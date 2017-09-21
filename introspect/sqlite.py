@@ -15,14 +15,8 @@ def get_field_size(name):
     return int(m.group(1)) if m else None
 
 
-# This light wrapper "fakes" a dictionary interface, because some SQLite data
-# types include variables in them -- e.g. "varchar(30)" -- and can't be matched
-# as a simple dictionary lookup.
-class FlexibleFieldLookupDict:
-    # Maps SQL types to Django Field types. Some of the SQL types have multiple
-    # entries here because SQLite allows for anything and doesn't normalize the
-    # field type; it uses whatever was given.
-    base_data_types_reverse = {
+class Introspection(BaseIntrospection):
+    data_types_reverse = {
         'bool': 'bool',
         'boolean': 'bool',
         'smallint': 'int',
@@ -42,20 +36,6 @@ class FlexibleFieldLookupDict:
         'time': 'time',
     }
 
-    def __getitem__(self, key):
-        key = key.lower()
-        try:
-            return self.base_data_types_reverse[key]
-        except KeyError:
-            size = get_field_size(key)
-            if size is not None:
-                return ('CharField', {'max_length': size})
-            raise KeyError
-
-
-class Introspection(BaseIntrospection):
-    data_types_reverse = FlexibleFieldLookupDict()
-
     imports = {
         'LongStr': 'from pony.orm.ormtypes import LongStr',
         'datetime': 'from datetime import datetime',
@@ -66,14 +46,21 @@ class Introspection(BaseIntrospection):
     }
 
     def get_field_type(self, data_type, description):
-        field_type, _import = super().get_field_type(data_type, description)
-        assert _import is None
+        opts = None
+        data_type = data_type.lower()
+        try:
+            field_type = self.data_types_reverse[data_type]
+        except KeyError:
+            field_type = 'str'
+            size = get_field_size(data_type)
+            assert size is not None
+            opts = {'max_len': size}
         _import = self.imports.get(field_type)
         if description.default and 'nextval' in description.default:
             # ???
             if field_type == 'int':
-                return 'AUTO', _import
-        return field_type, _import
+                return 'AUTO', opts, _import
+        return field_type, opts, _import
 
     def get_table_list(self, cursor):
         """Return a list of table and view names in the current database."""

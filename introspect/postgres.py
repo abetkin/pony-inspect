@@ -48,13 +48,13 @@ class Introspection(BaseIntrospection):
             AND c.relname = %s"""
 
     def get_field_type(self, data_type, description):
-        field_type, _import = super().get_field_type(data_type, description)
+        field_type, opts, _import = super().get_field_type(data_type, description)
         assert _import is None
         _import = self.imports.get(field_type)
         if description.default and 'nextval' in description.default:
             if field_type == 'int':
-                return 'AUTO', _import
-        return field_type, _import
+                return 'AUTO', opts, _import
+        return field_type, opts, _import
 
     def get_table_list(self, cursor):
         """Return a list of table and view names in the current database."""
