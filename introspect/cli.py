@@ -7,6 +7,7 @@ Options:
 '''
 
 from collections import defaultdict
+from contextlib import ExitStack
 
 from pony.utils import cached_property
 
@@ -27,10 +28,12 @@ import warnings
 
 from .postgres import Introspection as PostgresIntrospection
 from .mysql import Introspection as MysqlIntrospection
+from .sqlite import Introspection as SqliteIntrospection
 
 INROSPECTION_IMPL = {
     'postgresql': PostgresIntrospection,
     'mysql': MysqlIntrospection,
+    'sqlite': SqliteIntrospection,
 }
 
 # TODO related field set
@@ -49,7 +52,6 @@ class Command:
     def get_output(self):
         lines = list(self._get_output())
         yield "# This is an auto-generated module with pony entities."
-        yield "# Feel free to rename the models, but don't rename _table_ or field names."
         yield ''
         yield from set(self.imports)
         yield ''
@@ -87,116 +89,119 @@ class Command:
 
         ret = {}
 
-        with connection.cursor() as cursor:
-            tables_to_introspect = introspection.table_names(cursor)
+        # FIXME
+        cursor = connection.cursor()
 
-            counters = self.field_counters
-            rel_counters = self.relations_counters
+        tables_to_introspect = introspection.table_names(cursor)
 
-            for table_name in tables_to_introspect:
-                try:
-                    relations = introspection.get_relations(cursor, table_name)
-                except NotImplementedError:
-                    if os.environ.get('DEBUG'):
-                        raise
-                    relations = {}
-                try:
-                    constraints = introspection.get_constraints(cursor, table_name)
-                except NotImplementedError:
-                    if os.environ.get('DEBUG'):
-                        raise
-                    constraints = {}
-                primary_key_columns = list(
-                    introspection.get_primary_key_columns(cursor, table_name)
-                )
-                unique_columns = [
-                    c['columns'][0] for c in constraints.values()
-                    if c['unique'] and len(c['columns']) == 1
-                ]
-                table_description = introspection.get_table_description(cursor, table_name)
-                
-                if self.is_pony_table(table_name):
+        counters = self.field_counters
+        rel_counters = self.relations_counters
+
+        for table_name in tables_to_introspect:
+            if self.is_pony_table(table_name):
+                continue
+            try:
+                relations = introspection.get_relations(cursor, table_name)
+            except NotImplementedError:
+                if os.environ.get('DEBUG'):
+                    raise
+                relations = {}
+            try:
+                constraints = introspection.get_constraints(cursor, table_name)
+            except NotImplementedError:
+                if os.environ.get('DEBUG'):
+                    raise
+                constraints = {}
+            primary_key_columns = list(
+                introspection.get_primary_key_columns(cursor, table_name)
+            )
+            unique_columns = [
+                c['columns'][0] for c in constraints.values()
+                if c['unique'] and len(c['columns']) == 1
+            ]
+            table_description = introspection.get_table_description(cursor, table_name)
+            
+            
+            # normalize field names & increment field name counters
+            for field in table_description:
+                if field.name in relations:
                     continue
-                # normalize field names & increment field name counters
-                for field in table_description:
-                    if field.name in relations:
+                field.name, _, _ = self.normalize_col_name(field.name)
+
+                field.name = f"{field.name}{counters[(table_name, field.name)] or ''}"
+                counters[(table_name, field.name)] += 1
+
+            # check if it's an m2m table
+            related_tables = []
+            is_m2m = False
+            for field in table_description:
+                #relations: {'a_id': ('id', 'm2m_a')}
+                if field.name not in relations:
+                    if field.name in primary_key_columns:
                         continue
-                    field.name, _, _ = self.normalize_col_name(field.name)
-
-                    field.name = f"{field.name}{counters[(table_name, field.name)] or ''}"
-                    counters[(table_name, field.name)] += 1
-
-                # check if it's an m2m table
-                related_tables = []
-                is_m2m = False
-                for field in table_description:
-                    #relations: {'a_id': ('id', 'm2m_a')}
-                    if field.name not in relations:
-                        if field.name in primary_key_columns:
-                            continue
-                        else:
-                            break
-                    tblname = relations[field.name][1]
-                    related_tables.append({'table': tblname, 'field': field.name})
-                else:
-                    
-                    is_m2m = len(set(t['table'] for t in related_tables)) == 2
-
-                if is_m2m:
-                    # store the relation in the each of related tables
-                    this, other = related_tables
-                    this_field, other_field = this['field'], other['field']
-                    this['field'] = f"{this['field']}_set{counters[(other['table'], this['field'])] or ''}"
-                    other['field'] = f"{other['field']}_set{counters[(this['table'], other['field'])] or ''}"
-                    counters[(this['table'], other_field)] += 1
-                    counters[(other['table'], this_field)] += 1
-                    for this, other in ((this, other), (other, this)):
-                        ret.setdefault(this['table'], {}).setdefault('rel_attrs', []).append({
-                            'name': other['field'],
-                            'table': other['table'],
-                            'cls': 'Set',
-                            'reverse': this['field']
-                        })
-                        rel_counters[(this['table'], other['table'])] += 1
-                    continue
-
-                # calculate relation attributes
-                for column_name, (_attr, ref_table) in relations.items():
-                    att_name, kwargs, _notes = self.normalize_col_name(column_name, is_related=True)
-                    index = counters[(table_name, att_name)]
-                    counters[(table_name, att_name)] += 1
-                    att_name = f"{att_name}{index or ''}"
-                    rel_attrs = ret.setdefault(table_name, {}).setdefault('rel_attrs', [])
-                    # getting reverse name             
-                    reverse = table_name.lower()
-                    index = counters[(ref_table, reverse)]
-                    counters[(ref_table, reverse)] += 1
-                    reverse = f"{reverse}_set{index or ''}"
-
-                    rel_attrs.append({
-                        'name': att_name,
-                        'cls': 'Required',
-                        'reverse': reverse,
-                        'table': ref_table,
-                        'kwargs': kwargs,
-                    })
-                    rel_counters[(table_name, ref_table)] += 1
-                    rel_attrs = ret.setdefault(ref_table, {}).setdefault('rel_attrs', [])
-                    rel_attrs.append({
-                        'name': reverse,
-                        'cls': 'Set',
-                        'reverse': att_name,
-                        'table': table_name,
-                    })
-                    rel_counters[(ref_table, table_name)] += 1
-
-                ret.setdefault(table_name, {}).update({
-                    'relations': relations, 'description': table_description,
-                    'unique_columns': unique_columns, 'primary_key_columns': primary_key_columns,
-                    'constraints': constraints,
-                })
+                    else:
+                        break
+                tblname = relations[field.name][1]
+                related_tables.append({'table': tblname, 'field': field.name})
+            else:
                 
-            return ret
+                is_m2m = len(set(t['table'] for t in related_tables)) == 2
+
+            if is_m2m:
+                # store the relation in the each of related tables
+                this, other = related_tables
+                this_field, other_field = this['field'], other['field']
+                this['field'] = f"{this['field']}_set{counters[(other['table'], this['field'])] or ''}"
+                other['field'] = f"{other['field']}_set{counters[(this['table'], other['field'])] or ''}"
+                counters[(this['table'], other_field)] += 1
+                counters[(other['table'], this_field)] += 1
+                for this, other in ((this, other), (other, this)):
+                    ret.setdefault(this['table'], {}).setdefault('rel_attrs', []).append({
+                        'name': other['field'],
+                        'table': other['table'],
+                        'cls': 'Set',
+                        'reverse': this['field']
+                    })
+                    rel_counters[(this['table'], other['table'])] += 1
+                continue
+
+            # calculate relation attributes
+            for column_name, (_attr, ref_table) in relations.items():
+                att_name, kwargs, _notes = self.normalize_col_name(column_name, is_related=True)
+                index = counters[(table_name, att_name)]
+                counters[(table_name, att_name)] += 1
+                att_name = f"{att_name}{index or ''}"
+                rel_attrs = ret.setdefault(table_name, {}).setdefault('rel_attrs', [])
+                # getting reverse name             
+                reverse = table_name.lower()
+                index = counters[(ref_table, reverse)]
+                counters[(ref_table, reverse)] += 1
+                reverse = f"{reverse}_set{index or ''}"
+
+                rel_attrs.append({
+                    'name': att_name,
+                    'cls': 'Required',
+                    'reverse': reverse,
+                    'table': ref_table,
+                    'kwargs': kwargs,
+                })
+                rel_counters[(table_name, ref_table)] += 1
+                rel_attrs = ret.setdefault(ref_table, {}).setdefault('rel_attrs', [])
+                rel_attrs.append({
+                    'name': reverse,
+                    'cls': 'Set',
+                    'reverse': att_name,
+                    'table': table_name,
+                })
+                rel_counters[(ref_table, table_name)] += 1
+
+            ret.setdefault(table_name, {}).update({
+                'relations': relations, 'description': table_description,
+                'unique_columns': unique_columns, 'primary_key_columns': primary_key_columns,
+                'constraints': constraints,
+            })
+            
+        return ret
 
     def _get_output(self):
         # not requires connection?
